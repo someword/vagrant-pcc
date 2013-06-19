@@ -1,0 +1,202 @@
+#!/usr/bin/env ruby
+#
+# = puppet-cert-clean -
+#
+# == Introduction
+# The goal of this script is to remove puppet certs when a vagrant 
+# node is being destroyed.  As this script is typically being run via
+# vagrant we will mostly 'exit 0' regardless of what happened instead of
+# blocking vagrant.
+#
+#
+# To work it requires the puppetmaster have the following in it's 
+# auth.conf.  Ideally you would only have this in your dev env.
+#
+# path ~ ^/certificate_status/([^/]+)$
+# auth yes
+# method find, save, destroy
+# allow $1
+#
+
+require 'optparse'
+require 'ostruct'
+require 'fileutils'
+require 'rubygems'
+require 'puppet'
+require 'openssl'
+require 'net/http'
+require 'net/https'
+require 'uri'
+
+class ParseOptions
+
+  # Make sure we have the puppet settings available before we go 
+  # anywhere.
+  begin
+    $puppet_application_mode = Puppet::Util::RunMode[:agent]
+    Puppet[:confdir] = '/etc/puppet' 
+    Puppet::Util::RunMode[:agent]
+    Puppet.settings.use :main, :agent
+    Puppet.parse_config
+  rescue Exception => e
+    puts ""
+    puts "An error occurred while loading the puppet settings"
+    puts e
+    exit
+  end
+
+  def self.parse(args)
+    script_name = File.basename($0)
+    options = OpenStruct.new
+    options.server          = Puppet[:ca_server]
+    options.certname        = Puppet[:certname]
+    options.ssldir          = Puppet[:ssldir]
+    options.localcacert     = Puppet[:localcacert]
+    options.hostcert        = Puppet[:hostcert]
+    options.hostprivkey     = Puppet[:hostprivkey]
+
+    o = OptionParser.new do |o|
+      o.set_summary_indent('  ')
+      o.separator ""
+      o.banner = "\nUsage: #{script_name} [options]\n"
+      o.separator ""
+
+      o.on(
+        "-s", "--server SERVER", "Puppet CA server",
+        "Default: #{options.server}") do |server|
+        options.server = server
+      end
+      o.on(
+        "-c", "--certname CERTNAME", "Certname to clean",
+        "Default: #{options.certname}") do |certname|
+        options.certname = certname
+      end
+      o.on(
+        "-d", "--ssldir SSLDIR", "Where are the certs",
+        "Default: #{options.ssldir}") do |ssldir|
+        options.ssldir = ssldir
+      end
+      o.on(
+        "-t", "--hostcert HOSTCERT", "Path to hosts cert",
+        "Default: #{options.hostcert}") do |hostcert|
+        options.hostcert = hostcert
+      end
+      o.on(
+        "-l", "--localcacert LOCALCACERT", "Path to ca cert",
+        "Default: #{options.localcacert}") do |localcacert|
+        options.localcacert = localcacert
+      end
+      o.on(
+        "-k", "--hostprivkey HOSTPRIVKEY", "Path to hosts private key",
+        "Default: #{options.hostprivkey}") do |hostprivkey|
+        options.hostprivkey = hostprivkey
+      end
+      o.separator ""
+      o.on_tail("-h", "--help", "Show this help message.") do
+        puts o
+        exit
+      end
+    end
+
+    begin
+      o.parse!(args)
+    rescue OptionParser::InvalidOption, OptionParser::MissingArgument => e
+      puts e.to_s
+      puts o
+      exit
+    end
+
+    options
+  end
+end
+
+class CertClean
+  attr_accessor :certname, :ssldir, :server, :http, :uri, :status, :localcacert, :hostcert, :hostprivkey, :msg
+
+  def initialize(options = {})
+    options.each_pair {|k,v| instance_variable_set("@#{k}",v) }
+    @state = true
+  end
+  
+  def client_files_exist?
+    unless [@hostprivkey, @hostcert, @localcacert].all? {|f| File.exists?(f) }
+      puts "Could not find the nodes cert and key file"
+      exit 0
+    end
+  end
+
+  def prep_http
+    begin
+      @uri = URI.parse("https://#{@server}:8140/production/certificate_status/#{@certname}")
+      key = File.read(@hostprivkey)
+      cert = File.read(@hostcert)
+      @http = Net::HTTP.new(uri.host,uri.port)
+      @http.use_ssl = true
+      @http.cert = OpenSSL::X509::Certificate.new(cert)
+      @http.key = OpenSSL::PKey::RSA.new(key)
+      @http.verify_mode = OpenSSL::SSL::VERIFY_NONE
+      @http.ca_file = File.read(@localcacert)
+    rescue Exception => e
+      @state = false
+      puts "An error occurred while preparing the http connection"
+      puts e
+      exit 0
+    end
+  end
+
+  def cert_status
+    begin
+      status_request = Net::HTTP::Get.new(uri.request_uri)
+      status_request.add_field("Content-Type", "text/pson")
+      status_request.add_field("Accept", "pson")
+      status_response = @http.request(status_request)
+      # We may not have json available so let's just look at the raw
+      # output.
+      @status = status_response.body.match(/"state":"(signed|revoked)"/) ? $1 : status_response.body
+    rescue Exception => e
+      @state = false
+      puts "An error occurred while trying to status the cert"
+      puts e
+      exit 0
+    end
+  end
+
+  def revoke_cert
+    begin
+      revoke_request = Net::HTTP::Put.new(uri.request_uri)
+      revoke_request.add_field("Content-Type", "text/pson")
+      revoke_request.add_field("Accept", "pson")
+      revoke_response = @http.request(revoke_request, '{"desired_state":"revoked"}')
+    rescue Exception => e
+      @state = false
+      puts "An error occurred while trying to revoke the cert"
+      puts e
+      exit 0
+    end
+  end
+
+  def delete_cert
+    begin
+      delete_request = Net::HTTP::Delete.new(uri.request_uri)
+      delete_request.add_field("Accept", "pson")
+      delete_request = @http.request(delete_request)
+    rescue Exception => e
+      @state = false
+      puts "An error occurred while trying to delete the cert"
+      puts e
+      exit 0
+    end
+  end
+end
+
+options = ParseOptions.parse(ARGV)
+c = CertClean.new(options.marshal_dump)
+c.client_files_exist?
+c.prep_http
+c.cert_status 
+if c.status == 'signed'
+  c.revoke_cert
+  c.delete_cert
+else
+  puts c.status
+end
