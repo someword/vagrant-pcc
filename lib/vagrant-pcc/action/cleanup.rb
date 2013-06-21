@@ -1,18 +1,27 @@
-require 'FileUtils'
+#require 'FileUtils'
 module VagrantPlugins
   module Pcc
     module Action
       class Cleanup
 
+        attr_accessor :guestpath
+
         def initialize(app,env)
           @app = app
         end
 
-        def using_puppet?(env)
-          env[:machine].config.vm.provisioners.find do |p|
-            p.config.is_a? VagrantPlugins::Puppet::Config
-            p.config.is_a? VagrantPlugins::Shell::Config
+        def provisioners(name, env)
+          env[:machine].config.vm.provisioners.select do |prov|
+            prov.name == name 
           end
+        end
+
+        def puppet_apply?(env)
+          provisioners(:puppet, env).any?
+        end
+
+        def puppet_agent?(env)
+          provisioners(:puppet_server, env).any?
         end
 
         def setup(env)
@@ -25,15 +34,18 @@ module VagrantPlugins
             FileUtils.cp(src, dst)
             FileUtils.chmod(0755, dst)
           end
+
+          env[:machine].config.vm.synced_folders.each do |id, data|
+              @guestpath = data[:guestpath] if data[:hostpath] == "."
+          end
+
+          @guestpath ||= '/vagrant'
         end
 
         def call(env)
-          #if using_puppet?(env)
-          if true
+          if puppet_apply?(env) or puppet_agent?(env)
             setup(env)
-            # How do I verify that '/vagrant' is available in the guest
-            # config.vm.synced_folder ".", "/vagrant"
-            command =  "/vagrant/puppet-cert-clean"
+            command = "#{@guestpath}/puppet-cert-clean"
             if env[:machine].state.id != :running
               env[:ui].info("#{ machine.name} is not running.") 
             end 
