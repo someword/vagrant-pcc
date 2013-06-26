@@ -8,17 +8,17 @@ If you run puppet agent on your vagrant nodes you create a puppet cert for commu
 
 To use this plugin you need to have the following in your puppet master(s) auth.conf.   We only set this on a specific puppet master that supports our mostly vagrant based dev env.   Please decide for yourself wether you think this is an acceptable configuration for your environment.
 
- path ~ ^/certificate_status/([^/]+)$
- auth yes
- method find, save, destroy
- allow $1
+ path ~ ^/certificate_status/([^/]+)$  
+ auth yes  
+ method find, save, destroy  
+ allow $1  
 
  More can be read about the certificate_status endpoint here
- http://docs.puppetlabs.com/guides/rest_api.html
+ http://docs.puppetlabs.com/guides/rest_api.html  
 
-The actual plugin is installed in the typical vagrant fashion
+The actual plugin is installed in the typical vagrant fashion  
 
-  $ vagrant plugin install vagrant-butcher
+  $ vagrant plugin install vagrant-butcher  
 
 ## Usage
 
