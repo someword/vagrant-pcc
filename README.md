@@ -18,7 +18,7 @@ To use this plugin you need to have the following in your puppet master(s) auth.
 
 The actual plugin is installed in the typical vagrant fashion  
 
-  $ vagrant plugin install vagrant-butcher  
+  $ vagrant plugin install vagrant-pcc  
 
 ## Usage
 
